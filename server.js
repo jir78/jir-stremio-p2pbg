@@ -41,7 +41,7 @@ app.get("/", (req, res) => {
                         let url = window.location.host + "/" + encodedConfig + "/manifest.json";
                         
                         document.getElementById("result").style.display = "block";
-                        document.getElementById("manualLink").innerText = "http://" + url;
+                        document.getElementById("manualLink").innerText = "https://" + url;
 
                         window.location.href = "stremio://" + url;
                     }
