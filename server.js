@@ -17,7 +17,6 @@ app.get("/", (req, res) => {
         <html>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #1a1a1a; color: white;">
                 <h2>⚙️ Настройки на P2PBG Добавка</h2>
-                <p>Въведете вашите лични данни за вход:</p>
                 <form onsubmit="install(event)" style="background: #333; padding: 20px; border-radius: 10px; display: inline-block;">
                     <input type="text" id="user" placeholder="Потребител" required style="padding: 10px; margin: 10px; width: 200px;"><br>
                     <input type="password" id="pass" placeholder="Парола" required style="padding: 10px; margin: 10px; width: 200px;"><br>
@@ -25,7 +24,7 @@ app.get("/", (req, res) => {
                         Генерирай линк
                     </button>
                 </form>
-                <div id="result" style="display: none; margin-top: 30px; padding: 15px; background: #2a2a2a; border: 1px solid #8a5aeb; border-radius: 5px; max-width: 600px; margin-left: auto; margin-right: auto; word-wrap: break-word;">
+                <div id="result" style="display: none; margin-top: 30px; padding: 15px; background: #2a2a2a; border: 1px solid #8a5aeb; border-radius: 5px; max-width: 600px; margin-left: auto; margin-right: auto;">
                     <p style="color: #ffcc00; font-size: 14px;">Копирайте линка по-долу и го поставете в Stremio:</p>
                     <b id="manualLink" style="color: #00ffcc; font-size: 16px;"></b>
                 </div>
@@ -48,7 +47,7 @@ app.get("/", (req, res) => {
 
 const manifest = {
     id: "org.p2pbg.stremio.cloud",
-    version: "1.0.5",
+    version: "1.0.8",
     name: "P2PBG Торенти",
     description: "Търси филми в p2pbg.com през твоя профил",
     resources: ["stream"],
@@ -105,25 +104,31 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
         const imdbId = idParts[0];
 
         let searchQuery = imdbId; 
-        let titleWords = [];
         
         try {
-            // 1. Взимаме реалното име от Stremio
+            // Взимаме името на филма от Stremio (на английски)
             const metaResp = await axios.get(`https://v3-cinemeta.strem.io/meta/${req.params.type}/${imdbId}.json`);
             if (metaResp.data && metaResp.data.meta && metaResp.data.meta.name) {
                 searchQuery = metaResp.data.meta.name;
-                // Разбиваме името на ключови думи
-                titleWords = searchQuery.toLowerCase().replace(/[^a-z0-9а-я ]/g, '').split(' ').filter(w => w.length > 2);
-                if (titleWords.length === 0) titleWords = [searchQuery.toLowerCase()];
             }
         } catch (err) {}
 
-        // 2. Търсим в p2pbg
         const searchUrl = `https://www.p2pbg.com/torrents?search=${encodeURIComponent(searchQuery)}&category=0&active=1`;
         const response = await axios.get(searchUrl, { headers: { "User-Agent": "Mozilla/5.0", "Cookie": userCookies[username] } });
-        const $ = cheerio.load(response.data);
+        
+        let htmlData = response.data;
+
+        // --- ХИРУРГИЧЕСКИЯТ РАЗРЕЗ ---
+        // Намираме къде е полето за търсене и изтриваме целия код ПРЕДИ него (премахваме спама)
+        let cutIndex = htmlData.indexOf('name="search"');
+        if (cutIndex !== -1) {
+            htmlData = htmlData.substring(cutIndex);
+        }
+
+        const $ = cheerio.load(htmlData);
         const streams = [];
 
+        // Вече търсим магнити само в изчистената, долна част на сайта
         $('a[href^="magnet:"]').each((i, el) => {
             const magnet = $(el).attr('href');
             const hashMatch = decodeURIComponent(magnet).match(/urn:btih:([a-zA-Z0-9]{40})/i);
@@ -133,29 +138,17 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
                 const torrentTitle = nameMatch[1].replace(/\+/g, ' ');
                 const tTitleLower = torrentTitle.toLowerCase();
                 
-                let isValid = false;
+                let isValid = true;
 
-                // 3. ЖЕЛЕЗЕН ФИЛТЪР: Проверяваме дали някоя от думите присъства в заглавието
-                if (titleWords.length > 0) {
-                    for (let word of titleWords) {
-                        if (tTitleLower.includes(word)) {
-                            isValid = true;
-                            break;
-                        }
-                    }
-                } else {
-                    if (tTitleLower.includes(imdbId.toLowerCase())) isValid = true;
-                }
-
-                // 4. ФИЛТЪР ЗА СЕРИАЛИ: Търси точния епизод
-                if (isValid && req.params.type === 'series') {
+                // Проверка за сериали (трябва да има правилния сезон и епизод)
+                if (req.params.type === 'series') {
                     let s = idParts[1].padStart(2, '0');
                     let e = idParts[2].padStart(2, '0');
                     let ep1 = `s${s}e${e}`; // s01e02
                     let ep2 = `${idParts[1]}x${idParts[2].padStart(2, '0')}`; // 1x02
                     
                     if (!tTitleLower.includes(ep1) && !tTitleLower.includes(ep2)) {
-                        isValid = false; // Грешен епизод -> Трием!
+                        isValid = false; 
                     }
                 }
 
