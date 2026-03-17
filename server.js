@@ -47,7 +47,7 @@ app.get("/", (req, res) => {
 
 const manifest = {
     id: "org.p2pbg.stremio.cloud",
-    version: "1.0.8",
+    version: "1.1.0",
     name: "P2PBG Торенти",
     description: "Търси филми в p2pbg.com през твоя профил",
     resources: ["stream"],
@@ -106,7 +106,6 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
         let searchQuery = imdbId; 
         
         try {
-            // Взимаме името на филма от Stremio (на английски)
             const metaResp = await axios.get(`https://v3-cinemeta.strem.io/meta/${req.params.type}/${imdbId}.json`);
             if (metaResp.data && metaResp.data.meta && metaResp.data.meta.name) {
                 searchQuery = metaResp.data.meta.name;
@@ -117,9 +116,6 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
         const response = await axios.get(searchUrl, { headers: { "User-Agent": "Mozilla/5.0", "Cookie": userCookies[username] } });
         
         let htmlData = response.data;
-
-        // --- ХИРУРГИЧЕСКИЯТ РАЗРЕЗ ---
-        // Намираме къде е полето за търсене и изтриваме целия код ПРЕДИ него (премахваме спама)
         let cutIndex = htmlData.indexOf('name="search"');
         if (cutIndex !== -1) {
             htmlData = htmlData.substring(cutIndex);
@@ -128,11 +124,11 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
         const $ = cheerio.load(htmlData);
         const streams = [];
 
-        // Вече търсим магнити само в изчистената, долна част на сайта
         $('a[href^="magnet:"]').each((i, el) => {
-            const magnet = $(el).attr('href');
-            const hashMatch = decodeURIComponent(magnet).match(/urn:btih:([a-zA-Z0-9]{40})/i);
-            const nameMatch = decodeURIComponent(magnet).match(/dn=([^&]+)/i);
+            const rawMagnet = $(el).attr('href');
+            const decodedMagnet = decodeURIComponent(rawMagnet);
+            const hashMatch = decodedMagnet.match(/urn:btih:([a-zA-Z0-9]{40})/i);
+            const nameMatch = decodedMagnet.match(/dn=([^&]+)/i);
             
             if (hashMatch && nameMatch) {
                 const torrentTitle = nameMatch[1].replace(/\+/g, ' ');
@@ -140,12 +136,11 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
                 
                 let isValid = true;
 
-                // Проверка за сериали (трябва да има правилния сезон и епизод)
                 if (req.params.type === 'series') {
                     let s = idParts[1].padStart(2, '0');
                     let e = idParts[2].padStart(2, '0');
-                    let ep1 = `s${s}e${e}`; // s01e02
-                    let ep2 = `${idParts[1]}x${idParts[2].padStart(2, '0')}`; // 1x02
+                    let ep1 = `s${s}e${e}`; 
+                    let ep2 = `${idParts[1]}x${idParts[2].padStart(2, '0')}`; 
                     
                     if (!tTitleLower.includes(ep1) && !tTitleLower.includes(ep2)) {
                         isValid = false; 
@@ -153,9 +148,20 @@ app.get('/:config/stream/:type/:id.json', async (req, res) => {
                 }
 
                 if (isValid) {
+                    // СПАСИТЕЛНИЯТ ПОЯС: Извличаме оригиналните тракери на сайта!
+                    let trMatches = decodedMagnet.match(/tr=([^&]+)/g) || [];
+                    let sources = trMatches.map(tr => "tracker:" + decodeURIComponent(tr.replace('tr=', '')));
+                    
+                    // Добавяме мощни глобални тракери за гаранция
+                    sources.push("tracker:udp://tracker.opentrackr.org:1337/announce");
+                    sources.push("tracker:udp://open.demonii.com:1337/announce");
+                    sources.push("tracker:udp://tracker.zamunda.net:6969/announce");
+                    sources.push("dht:" + hashMatch[1].toLowerCase());
+
                     streams.push({
                         title: `P2PBG\n${torrentTitle}`,
-                        infoHash: hashMatch[1].toLowerCase()
+                        infoHash: hashMatch[1].toLowerCase(),
+                        sources: sources // Вече подаваме пълната "карта" към филма на Stremio!
                     });
                 }
             }
